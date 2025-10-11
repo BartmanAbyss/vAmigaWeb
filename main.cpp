@@ -21,6 +21,7 @@
 #include "STFile.h"
 #include "OtherFile.h"
 #include "MutableFileSystem.h"
+#include "OSDebugger.h"
 
 #include "MemUtils.h"
 #include "MediaFileTypes.h"
@@ -603,8 +604,16 @@ void send_message_to_js_w(const char * msg, long data1, long data2)
 //bool paused_the_emscripten_main_loop=false;
 bool already_run_the_emscripten_main_loop=false;
 bool warp_mode=false;
+
+// Store the last message for retrieval
+static Message lastMessage;
+static bool hasLastMessage = false;
 //void theListener(const void * amiga, long type,  int data1, int data2, int data3, int data4){
 void theListener(const void * emu, Message msg){
+  // Store the message for wasm_get_current_message()
+  lastMessage = msg;
+  hasLastMessage = true;
+
   int data1=msg.value;
   int data2=0;
   if(msg.type == Msg::VIEWPORT)
@@ -2305,11 +2314,23 @@ extern "C" const char* wasm_configure(char* option, char* _value)
         wrapper->emu->set(Opt::AMIGA_SPEED_BOOST, boost_param);
         speed_boost= ((double) boost_param) / 100.0;
       }
-      requested_targetFrameCount_reset=true; 
+      requested_targetFrameCount_reset=true;
+    }
+    else if(strcmp(option,"AUD.SAMPLING_METHOD") == 0)
+    {
+      wrapper->emu->set(Opt::AUD_SAMPLING_METHOD, util::parseNum(value));
+    }
+    else if(strcmp(option,"AUD.FILTER_TYPE") == 0)
+    {
+      wrapper->emu->set(Opt::AUD_FILTER_TYPE, util::parseNum(value));
+    }
+    else if(strcmp(option,"AUD.BUFFER_SIZE") == 0)
+    {
+      wrapper->emu->set(Opt::AUD_BUFFER_SIZE, util::parseNum(value));
     }
     else
     {
-      wrapper->emu->set(Opt(util::parseEnum <OptEnum>(std::string(option))), util::parseBool(value)); 
+      wrapper->emu->set(Opt(util::parseEnum <OptEnum>(std::string(option))), util::parseBool(value));
       wrapper->emu->emu->update();
     }
 
@@ -2319,7 +2340,7 @@ extern "C" const char* wasm_configure(char* option, char* _value)
         if(was_running) wrapper->emu->run();
     }
   }
-  catch(AppError &exception) {    
+  catch(std::exception &exception) {
 //    ErrorCode ec=exception.data;
 //    sprintf(config_result,"%s", ErrorCodeEnum::key(ec));
     printf("unknown key wasm_configure %s = %s\n", option, value.c_str());
@@ -2543,5 +2564,1802 @@ extern "C" void wasm_retro_shell(char* cmd)
     wrapper->emu->audioPort.port->unmute(10000);
   }
   else
-    wrapper->emu->retroShell.execScript(cmd);  
+    wrapper->emu->retroShell.execScript(cmd);
+}
+
+
+////////////////////////////////////////
+// GB additions
+////////////////////////////////////////
+
+
+// Debugger functions:
+
+// main.cpu.debugger.stepOver();
+extern "C" void wasm_step_over() { wrapper->emu->stepOver(); }
+
+extern "C" void wasm_step_into() { wrapper->emu->stepInto(); }
+
+// Breakpoints:
+
+extern "C" const char *wasm_list_breakpoints() {
+  static char buffer[4096];
+  try {
+    auto &bp = wrapper->emu->cpu.breakpoints;
+    snprintf(buffer, sizeof(buffer), "{\"breakpoints\":[");
+
+    for (int i = 0; i < bp.elements(); i++) {
+      if (i > 0)
+        strcat(buffer, ",");
+      auto guard = bp.guardNr(i);
+      if (guard) {
+        char entry[256];
+        snprintf(
+            entry, sizeof(entry),
+            "{\"nr\":%d,\"addr\":\"0x%08X\",\"enabled\":%s,\"ignore\":%ld}", i,
+            guard->addr, guard->enabled ? "true" : "false", guard->ignore);
+        strcat(buffer, entry);
+      }
+    }
+    strcat(buffer, "]}");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" bool wasm_set_breakpoint(u32 addr, u32 ignores = 0) {
+  try {
+    wrapper->emu->cpu.breakpoints.setAt(addr, ignores);
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_remove_breakpoint(u32 addr) {
+  try {
+    wrapper->emu->cpu.breakpoints.removeAt(addr);
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_remove_all_breakpoints() {
+  try {
+    wrapper->emu->cpu.breakpoints.removeAll();
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+// Watchpoints:
+
+extern "C" const char *wasm_list_watchpoints() {
+  static char buffer[4096];
+  try {
+    auto &wp = wrapper->emu->cpu.watchpoints;
+    snprintf(buffer, sizeof(buffer), "{\"watchpoints\":[");
+
+    for (int i = 0; i < wp.elements(); i++) {
+      if (i > 0)
+        strcat(buffer, ",");
+      auto guard = wp.guardNr(i);
+      if (guard) {
+        char entry[256];
+        snprintf(
+            entry, sizeof(entry),
+            "{\"nr\":%d,\"addr\":\"0x%08X\",\"enabled\":%s,\"ignore\":%ld}", i,
+            guard->addr, guard->enabled ? "true" : "false", guard->ignore);
+        strcat(buffer, entry);
+      }
+    }
+    strcat(buffer, "]}");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" bool wasm_set_watchpoint(u32 addr, u32 ignores = 0) {
+  try {
+    wrapper->emu->cpu.watchpoints.setAt(addr, ignores);
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_remove_watchpoint(u32 addr) {
+  try {
+    wrapper->emu->cpu.watchpoints.removeAt(addr);
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_remove_all_watchpoints() {
+  try {
+    wrapper->emu->cpu.watchpoints.removeAll();
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+// Catchpoints:
+
+extern "C" const char *wasm_list_catchpoints() {
+  static char buffer[4096];
+  try {
+    auto &cp = wrapper->emu->cpu.cpu->catchpoints;
+    snprintf(buffer, sizeof(buffer), "{\"catchpoints\":[");
+
+    for (int i = 0; i < cp.elements(); i++) {
+      if (i > 0)
+        strcat(buffer, ",");
+      auto guard = cp.guardNr(i);
+      if (guard) {
+        char entry[256];
+        snprintf(entry, sizeof(entry),
+                  "{\"nr\":%d,\"vector\":%d,\"enabled\":%s,\"ignore\":%ld}", i,
+                  guard->addr, guard->enabled ? "true" : "false",
+                  guard->ignore);
+        strcat(buffer, entry);
+      }
+    }
+    strcat(buffer, "]}");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" bool wasm_remove_all_catchpoints() {
+  try {
+    wrapper->emu->cpu.cpu->catchpoints.removeAll();
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_set_catchpoint(u32 vector, u32 ignores = 0) {
+  try {
+    wrapper->emu->cpu.cpu->catchpoints.setAt(vector, ignores);
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_remove_catchpoint(u32 vector) {
+  try {
+    wrapper->emu->cpu.cpu->catchpoints.removeAt(vector);
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_eol() {
+  try {
+    wrapper->emu->finishLine();
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+extern "C" bool wasm_eof() {
+  try {
+    wrapper->emu->finishFrame();
+    return true;
+  } catch(...) {
+    return false;
+  }
+}
+
+
+// Data read/write funcitons
+
+extern "C" const char *wasm_debug_emulator_state() {
+  static char result_buffer[512];
+
+  try {
+    auto *emu = wrapper->emu;
+
+    snprintf(result_buffer, sizeof(result_buffer),
+      "{\"isRunning\":%s,\"isPaused\":%s,\"isPoweredOn\":%s}",
+      emu->isRunning() ? "true" : "false",
+      emu->isPaused() ? "true" : "false",
+      emu->isPoweredOn() ? "true" : "false"
+    );
+    return result_buffer;
+
+  } catch (const std::exception& e) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":\"Exception: %s\"}", e.what());
+    return result_buffer;
+  } catch (...) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":\"Unknown error occurred\"}");
+    return result_buffer;
+  }
+}
+
+extern "C" const char *wasm_set_register(const char* reg_name, u32 value) {
+  static char result_buffer[256];
+
+  // Helper functions to reduce repetition
+  auto success32 = [&](u32 val) -> const char* {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"success\":true,\"register\":\"%s\",\"value\":\"0x%08X\"}", reg_name, val);
+    return result_buffer;
+  };
+  auto success16 = [&](u16 val) -> const char* {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"success\":true,\"register\":\"%s\",\"value\":\"0x%04X\"}", reg_name, val);
+    return result_buffer;
+  };
+  auto success8 = [&](u8 val) -> const char* {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"success\":true,\"register\":\"%s\",\"value\":\"0x%02X\"}", reg_name, val);
+    return result_buffer;
+  };
+  auto error = [&](const char* msg) -> const char* {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":true,\"message\":\"%s\",\"register\":\"%s\"}", msg, reg_name);
+    return result_buffer;
+  };
+
+  try {
+    std::string regName(reg_name);
+    auto *cpu = wrapper->emu->cpu.cpu;
+
+    // Data registers (d0-d7)
+    if (regName.length() == 2 && regName[0] == 'd' && regName[1] >= '0' && regName[1] <= '7') {
+      cpu->setD(regName[1] - '0', value);
+      return success32(value);
+    }
+    // Address registers (a0-a7)
+    if (regName.length() == 2 && regName[0] == 'a' && regName[1] >= '0' && regName[1] <= '7') {
+      cpu->setA(regName[1] - '0', value);
+      return success32(value);
+    }
+    if (regName == "pc") {
+      cpu->setPC(value);
+      return success32(value);
+    }
+    if (regName == "sr") {
+      cpu->setSR(value & 0xFFFF);
+      return success16(value & 0xFFFF);
+    }
+    if (regName == "usp") {
+      cpu->setUSP(value);
+      return success32(value);
+    }
+    if (regName == "msp") {
+      cpu->setMSP(value);
+      return success32(value);
+    }
+    if (regName == "isp") {
+      cpu->setISP(value);
+      return success32(value);
+    }
+
+    if (regName == "vbr") {
+      cpu->setVBR(value);
+      return success32(value);
+    }
+    if (regName == "sfc") {
+      cpu->setSFC(value);
+      return success8(value);
+    }
+    if (regName == "dfc") {
+      cpu->setDFC(value);
+      return success8(value);
+    }
+    if (regName == "caar") {
+      cpu->setCAAR(value);
+      return success8(value);
+    }
+    if (regName == "cacr") {
+      cpu->setCACR(value);
+      return success8(value);
+    }
+    if (regName == "irc") {
+      cpu->setIRC(value & 0xFFFF);
+      return success16(value);
+    }
+
+    return error("Unsupported register name");
+
+  } catch (const std::exception& e) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":true,\"message\":\"Exception: %s\"}", e.what());
+    return result_buffer;
+  } catch (...) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":true,\"message\":\"Unknown error occurred\"}");
+    return result_buffer;
+  }
+}
+
+extern "C" u8 wasm_peek8(u32 addr) {
+  return wrapper->emu->mem.mem->spypeek8<Accessor::CPU>(addr);
+}
+
+extern "C" u16 wasm_peek16(u32 addr) {
+  return wrapper->emu->mem.mem->spypeek16<Accessor::CPU>(addr);
+}
+
+extern "C" u32 wasm_peek32(u32 addr) {
+  u16 hi = wrapper->emu->mem.mem->spypeek16<Accessor::CPU>(addr);
+  u16 lo = wrapper->emu->mem.mem->spypeek16<Accessor::CPU>(addr + 2);
+  return (hi << 16) | lo;
+}
+
+extern "C" u16 wasm_peek_custom(u32 addr) {
+  return wrapper->emu->mem.mem->spypeekCustom16(addr);
+}
+
+extern "C" void wasm_poke8(u32 addr, u8 value) {
+  wrapper->emu->mem.mem->poke8<Accessor::CPU>(addr, value);
+}
+
+extern "C" void wasm_poke16(u32 addr, u16 value) {
+  wrapper->emu->mem.mem->poke16<Accessor::CPU>(addr, value);
+}
+
+extern "C" void wasm_poke32(u32 addr, u32 value) {
+  wrapper->emu->mem.mem->poke16<Accessor::CPU>(addr, value >> 16);
+  wrapper->emu->mem.mem->poke16<Accessor::CPU>(addr + 2, value & 0xffff);
+}
+
+extern "C" void wasm_poke_custom16(u32 addr, u16 value) {
+  wrapper->emu->mem.mem->pokeCustom16<Accessor::CPU>(addr, value);
+}
+
+extern "C" void wasm_poke_custom32(u32 addr, u32 value) {
+  wrapper->emu->mem.mem->pokeCustom16<Accessor::CPU>(addr, value >> 16);
+  wrapper->emu->mem.mem->pokeCustom16<Accessor::CPU>(addr + 2, value & 0xffff);
+}
+
+
+// CPU Tracing:
+
+extern "C" bool wasm_enable_cpu_logging(bool enable) {
+  try {
+    if (enable) {
+      wrapper->emu->cpu.cpu->debugger.enableLogging();
+    } else {
+      wrapper->emu->cpu.cpu->debugger.disableLogging();
+    }
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+extern "C" void wasm_clear_cpu_trace() {
+  try {
+    wrapper->emu->cpu.cpu->debugger.clearLog();
+  } catch (...) {
+    // Ignore errors
+  }
+}
+
+extern "C" u8* wasm_read_memory(u32 address, u32 count) {
+  try {
+    if (count == 0) {
+      return nullptr;
+    }
+
+    u8* buffer = (u8*)malloc(count);
+    if (!buffer) {
+      return nullptr;
+    }
+
+    for (u32 i = 0; i < count; i++) {
+      buffer[i] = wrapper->emu->mem.mem->spypeek8<Accessor::CPU>(address + i);
+    }
+
+    return buffer;
+
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+extern "C" bool wasm_write_memory(u32 address, u8* data, u32 count) {
+  try {
+    if (!data || count == 0) {
+      return false;
+    }
+
+    for (u32 i = 0; i < count; i++) {
+      wrapper->emu->mem.mem->poke8<Accessor::CPU>(address + i, data[i]);
+    }
+
+    return true;
+
+  } catch (...) {
+    return false;
+  }
+}
+
+extern "C" const char* wasm_jump(u32 address) {
+  static char result_buffer[256];
+
+  try {
+    wrapper->emu->cpu.cpu->jump(address);
+
+    snprintf(result_buffer, sizeof(result_buffer),
+      "{\"success\":true,\"address\":\"0x%08X\"}", address);
+    return result_buffer;
+
+  } catch (const std::exception& e) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":\"Exception: %s\"}", e.what());
+    return result_buffer;
+  } catch (...) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":\"Unknown error occurred\"}");
+    return result_buffer;
+  }
+}
+
+extern "C" const char *wasm_get_cpu_trace(u32 count) {
+  static std::string result_buffer;
+
+  try {
+    using namespace vamiga;
+
+    // Get number of logged instructions
+    isize logged = wrapper->emu->cpu.cpu->debugger.loggedInstructions();
+
+    if (logged == 0) {
+      result_buffer = "{\"error\":\"No trace data available. CPU logging "
+                      "might be disabled.\"}";
+      return result_buffer.c_str();
+    }
+
+    // Limit count to available instructions
+    if (count > logged)
+      count = logged;
+
+    result_buffer = "{";
+    result_buffer += "\"total_logged\":" + std::to_string(logged) + ",";
+    result_buffer += "\"returned\":" + std::to_string(count) + ",";
+    result_buffer += "\"trace\":[";
+
+    // Get the most recent 'count' instructions (working backwards)
+    for (u32 i = 0; i < count; i++) {
+      if (i > 0)
+        result_buffer += ",";
+
+      // logEntryAbs uses absolute indexing - 0 = oldest, logged-1 = newest
+      isize trace_index = logged - count + i;
+      isize instr_len = 0;
+      const char *pc_str =
+          wrapper->emu->cpu.cpu->disassembleRecordedPC(trace_index);
+      const char *instr_str = wrapper->emu->cpu.cpu->disassembleRecordedInstr(
+          trace_index, &instr_len);
+      const char *flags_str =
+          wrapper->emu->cpu.cpu->disassembleRecordedFlags(trace_index);
+
+      result_buffer += "{";
+      result_buffer += "\"pc\":\"" + std::string(pc_str) + "\",";
+      result_buffer += "\"instruction\":\"" + std::string(instr_str) + "\",";
+      result_buffer += "\"flags\":\"" + std::string(flags_str) + "\",";
+      result_buffer += "\"length\":" + std::to_string(instr_len);
+      result_buffer += "}";
+    }
+
+    result_buffer += "]}";
+
+  } catch (...) {
+    result_buffer = "{\"error\":\"Failed to get CPU trace\"}";
+  }
+
+  return result_buffer.c_str();
+}
+
+// Memory Debugging Functions:
+
+extern "C" const char *wasm_disassemble(u32 addr, u32 count) {
+  static std::string result_buffer;
+
+  try {
+    using namespace vamiga;
+
+    result_buffer = "{";
+    result_buffer += "\"start_addr\":\"";
+
+    char addr_hex[16];
+    sprintf(addr_hex, "0x%08X", addr);
+    result_buffer += std::string(addr_hex) + "\",";
+    result_buffer += "\"count\":" + std::to_string(count) + ",";
+    result_buffer += "\"instructions\":[";
+
+    u32 current_addr = addr;
+
+    for (u32 i = 0; i < count; i++) {
+      if (i > 0)
+        result_buffer += ",";
+
+      isize instr_len = 0;
+      const char *instruction =
+          wrapper->emu->cpu.cpu->disassembleInstr(current_addr, &instr_len);
+      const char *hex_words = wrapper->emu->cpu.cpu->disassembleWords(
+          current_addr, instr_len / 2);
+      const char *addr_str =
+          wrapper->emu->cpu.cpu->disassembleAddr(current_addr);
+
+      result_buffer += "{";
+      result_buffer += "\"addr\":\"" + std::string(addr_str) + "\",";
+      result_buffer +=
+          "\"instruction\":\"" + std::string(instruction) + "\",";
+      result_buffer += "\"hex\":\"" + std::string(hex_words) + "\",";
+      result_buffer += "\"length\":" + std::to_string(instr_len);
+      result_buffer += "}";
+
+      current_addr += instr_len;
+    }
+
+    result_buffer += "]}";
+
+  } catch (...) {
+    result_buffer = "{\"error\":\"Failed to disassemble memory\"}";
+  }
+
+  return result_buffer.c_str();
+}
+
+extern "C" const char *wasm_disassemble_copper(u32 addr, u32 count) {
+  static std::string result_buffer;
+
+  try {
+    using namespace vamiga;
+
+    result_buffer = "{";
+    result_buffer += "\"start_addr\":\"";
+
+    char addr_hex[16];
+    sprintf(addr_hex, "0x%08X", addr);
+    result_buffer += std::string(addr_hex) + "\",";
+    result_buffer += "\"count\":" + std::to_string(count) + ",";
+    result_buffer += "\"instructions\":[";
+
+    u32 current_addr = addr;
+
+    for (u32 i = 0; i < count; i++) {
+      if (i > 0)
+        result_buffer += ",";
+
+      // Each copper instruction is 4 bytes (2 words)
+      std::string instruction = wrapper->emu->agnus.copper.disassemble(current_addr, true);
+
+      // Get the hex words for the copper instruction (2 words)
+      u16 word1 = wrapper->emu->mem.mem->spypeek16<Accessor::CPU>(current_addr);
+      u16 word2 = wrapper->emu->mem.mem->spypeek16<Accessor::CPU>(current_addr + 2);
+
+      char hex_words[16];
+      sprintf(hex_words, "%04X %04X", word1, word2);
+
+      char addr_str[16];
+      sprintf(addr_str, "%06X", current_addr);
+
+      result_buffer += "{";
+      result_buffer += "\"addr\":\"" + std::string(addr_str) + "\",";
+      result_buffer += "\"instruction\":\"" + instruction + "\",";
+      result_buffer += "\"hex\":\"" + std::string(hex_words) + "\",";
+      result_buffer += "\"length\":4";
+      result_buffer += "}";
+
+      current_addr += 4; // Copper instructions are always 4 bytes
+    }
+
+    result_buffer += "]}";
+
+  } catch (...) {
+    result_buffer = "{\"error\":\"Failed to disassemble copper instructions\"}";
+  }
+
+  return result_buffer.c_str();
+}
+
+extern "C" const char *wasm_hex_dump(u32 addr, u32 bytes) {
+  static char buffer[8192];
+  try {
+    auto result =
+        wrapper->emu->mem.debugger.hexDump(Accessor::CPU, addr, bytes, 1);
+    strncpy(buffer, result.c_str(), sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    return buffer;
+  } catch (...) {
+    return "error";
+  }
+}
+
+extern "C" const char *wasm_mem_dump(u32 addr, u32 bytes) {
+  static char buffer[8192];
+  try {
+    auto result =
+        wrapper->emu->mem.debugger.memDump(Accessor::CPU, addr, bytes, 1);
+    strncpy(buffer, result.c_str(), sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    return buffer;
+  } catch (...) {
+    return "error";
+  }
+}
+
+extern "C" const char *wasm_asc_dump(u32 addr, u32 bytes) {
+  static char buffer[4096];
+  try {
+    auto result =
+        wrapper->emu->mem.debugger.ascDump(Accessor::CPU, addr, bytes);
+    strncpy(buffer, result.c_str(), sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    return buffer;
+  } catch (...) {
+    return "error";
+  }
+}
+
+
+// Component Info Functions
+
+extern "C" const char *wasm_get_amiga_info() {
+  static char buffer[1024];
+  try {
+    const auto &info = wrapper->emu->amiga.getInfo();
+    snprintf(buffer, sizeof(buffer),
+              "{\"cpuClock\":%lld,\"dmaClock\":%lld,\"ciaAClock\":%lld,"
+              "\"ciaBClock\":%lld,\"frame\":%lld,\"vpos\":%ld,\"hpos\":%ld}",
+              (long long)info.cpuClock, (long long)info.dmaClock,
+              (long long)info.ciaAClock, (long long)info.ciaBClock,
+              (long long)info.frame, info.vpos, info.hpos);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_cpu_info() {
+  static char buffer[1024];
+  try {
+    const auto &info = wrapper->emu->cpu.getInfo();
+
+    // - usp - User Stack Pointer
+    // - isp - Interrupt Stack Pointer
+    // - msp - Master Stack Pointer (68020+)
+    // - vbr - Vector Base Register (68010+)
+    // - irc - Instruction Register Cache
+    // - sfc/dfc - Source/Destination Function Code (68010+)
+    // - cacr/caar - Cache Control/Address (68020+)
+    snprintf(buffer, sizeof(buffer),
+              "{\"pc\":\"0x%08X\",\"d0\":\"0x%08X\",\"d1\":"
+              "\"0x%08X\",\"d2\":\"0x%08X\",\"d3\":\"0x%08X\",\"d4\":\"0x%"
+              "08X\",\"d5\":\"0x%08X\",\"d6\":\"0x%08X\",\"d7\":\"0x%08X\","
+              "\"a0\":\"0x%08X\",\"a1\":\"0x%08X\",\"a2\":\"0x%08X\",\"a3\":"
+              "\"0x%08X\",\"a4\":\"0x%08X\",\"a5\":\"0x%08X\",\"a6\":\"0x%"
+              "08X\",\"a7\":\"0x%08X\",\"sr\":\"0x%04X\",\"usp\":\"0x%08X\","
+              "\"isp\":\"0x%08X\",\"msp\":\"0x%08X\",\"vbr\":\"0x%08X\","
+              "\"irc\":\"0x%04X\",\"sfc\":\"0x%02X\",\"dfc\":\"0x%02X\","
+              "\"cacr\":\"0x%02X\",\"caar\":\"0x%02X\"}",
+              info.pc0, info.d[0], info.d[1], info.d[2],
+              info.d[3], info.d[4], info.d[5], info.d[6], info.d[7], info.a[0],
+              info.a[1], info.a[2], info.a[3], info.a[4], info.a[5], info.a[6],
+              info.a[7], info.sr, info.usp, info.isp, info.msp, info.vbr,
+              info.irc, info.sfc, info.dfc, info.cacr, info.caar);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_agnus_info() {
+  static char buffer[1024];
+  try {
+    const auto &info = wrapper->emu->agnus.getInfo();
+    snprintf(buffer, sizeof(buffer),
+              "{\"vpos\":%d,\"hpos\":%d,\"frame\":%lld,\"dmacon\":\"0x%04X\","
+              "\"bplcon0\":\"0x%04X\",\"ddfstrt\":\"0x%04X\",\"ddfstop\":\"0x%"
+              "04X\",\"diwstrt\":\"0x%04X\",\"diwstop\":\"0x%04X\","
+              "\"bpl1mod\":\"0x%04X\",\"bpl2mod\":\"0x%04X\"}",
+              (int)info.vpos, (int)info.hpos, (long long)info.frame,
+              info.dmacon, info.bplcon0, info.ddfstrt, info.ddfstop,
+              info.diwstrt, info.diwstop, info.bpl1mod, info.bpl2mod);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_paula_info() {
+  static char buffer[1024];
+  try {
+    const auto &info = wrapper->emu->paula.getInfo();
+    snprintf(
+        buffer, sizeof(buffer),
+        "{\"intreq\":\"0x%04X\",\"intena\":\"0x%04X\",\"adkcon\":\"0x%04X\"}",
+        info.intreq, info.intena, info.adkcon);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_denise_info() {
+  static char buffer[1024];
+  try {
+    const auto &info = wrapper->emu->denise.getInfo();
+    snprintf(buffer, sizeof(buffer),
+              "{\"ecs\":%s,\"bplcon0\":\"0x%04X\",\"bplcon1\":\"0x%04X\","
+              "\"bplcon2\":\"0x%04X\",\"bpu\":%d,\"joydat0\":\"0x%04X\","
+              "\"joydat1\":\"0x%04X\",\"clxdat\":\"0x%04X\",\"diwstrt\":\"0x%"
+              "04X\",\"diwstop\":\"0x%04X\"}",
+              info.ecs ? "true" : "false", info.bplcon0, info.bplcon1,
+              info.bplcon2, info.bpu, info.joydat[0], info.joydat[1],
+              info.clxdat, info.diwstrt, info.diwstop);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_memory_info() {
+  static char buffer[4096];
+  try {
+    const auto &info = wrapper->emu->mem.getInfo();
+
+    // Build JSON with basic memory info first
+    // Mask values are (memorySize - 1) and used for address wrapping within memory regions
+    // e.g. chipMask=0x7FFFF for 512KB chip RAM, romMask=0x7FFFF for 512KB ROM
+    std::string json = "{";
+    char basicBuf[512];
+    snprintf(basicBuf, sizeof(basicBuf),
+        "\"hasRom\":%s,\"hasWom\":%s,\"hasExt\":%s,\"hasBootRom\":%s,"
+        "\"hasKickRom\":%s,\"womLock\":%s,\"romMask\":\"0x%08X\",\"womMask\":"
+        "\"0x%08X\",\"extMask\":\"0x%08X\",\"chipMask\":\"0x%08X\"",
+        info.hasRom ? "true" : "false", info.hasWom ? "true" : "false",
+        info.hasExt ? "true" : "false", info.hasBootRom ? "true" : "false",
+        info.hasKickRom ? "true" : "false", info.womLock ? "true" : "false",
+        info.romMask, info.womMask, info.extMask, info.chipMask);
+    json += basicBuf;
+
+    // Add memory source arrays using numeric values
+    // MemSrc enum values: 0=NONE, 1=CHIP, 2=CHIP_MIRROR, 3=SLOW, 4=SLOW_MIRROR,
+    // 5=FAST, 6=CIA, 7=CIA_MIRROR, 8=RTC, 9=CUSTOM, 10=CUSTOM_MIRROR,
+    // 11=AUTOCONF, 12=ZOR, 13=ROM, 14=ROM_MIRROR, 15=WOM, 16=EXT
+    json += ",\"cpuMemSrc\":[";
+    for (int i = 0; i < 256; i++) {
+      if (i > 0) json += ",";
+      json += std::to_string((long)info.cpuMemSrc[i]);
+    }
+    json += "],\"agnusMemSrc\":[";
+    for (int i = 0; i < 256; i++) {
+      if (i > 0) json += ",";
+      json += std::to_string((long)info.agnusMemSrc[i]);
+    }
+    json += "]}";
+
+    strncpy(buffer, json.c_str(), sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_audio_channel_info(int channel) {
+  static char buffer[512];
+  try {
+    const StateMachineInfo *info = nullptr;
+    switch (channel) {
+    case 0:
+      info = &wrapper->emu->paula.audioChannel0.getInfo();
+      break;
+    case 1:
+      info = &wrapper->emu->paula.audioChannel1.getInfo();
+      break;
+    case 2:
+      info = &wrapper->emu->paula.audioChannel2.getInfo();
+      break;
+    case 3:
+      info = &wrapper->emu->paula.audioChannel3.getInfo();
+      break;
+    default:
+      return "{\"error\":\"invalid_channel\"}";
+    }
+    snprintf(buffer, sizeof(buffer),
+              "{\"state\":%d,\"dma\":%s,\"audlen\":%d,\"audper\":%d,"
+              "\"audvol\":%d,\"auddat\":\"0x%04X\"}",
+              (int)info->state, info->dma ? "true" : "false", info->audlen,
+              info->audper, info->audvol, info->auddat);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_audio_port_info() {
+  static char buffer[512];
+  try {
+    const auto &info = wrapper->emu->audioPort.getInfo();
+    snprintf(buffer, sizeof(buffer), "{\"isMuted\":%s}",
+              info.isMuted ? "true" : "false");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_cia_info(int cia_num) {
+  static char buffer[1024];
+  try {
+    const CIAInfo *info = nullptr;
+    if (cia_num == 0) {
+      info = &wrapper->emu->ciaA.getInfo();
+    } else if (cia_num == 1) {
+      info = &wrapper->emu->ciaB.getInfo();
+    } else {
+      return "{\"error\":\"invalid_cia\"}";
+    }
+    snprintf(
+        buffer, sizeof(buffer),
+        "{\"portA\":{\"port\":\"0x%02X\",\"reg\":\"0x%02X\",\"dir\":\"0x%"
+        "02X\"},\"portB\":{\"port\":\"0x%02X\",\"reg\":\"0x%02X\",\"dir\":"
+        "\"0x%02X\"},\"timerA\":{\"count\":%d,\"latch\":%d,\"running\":%s},"
+        "\"timerB\":{\"count\":%d,\"latch\":%d,\"running\":%s},\"icr\":\"0x%"
+        "02X\",\"imr\":\"0x%02X\",\"irq\":%s}",
+        info->portA.port, info->portA.reg, info->portA.dir, info->portB.port,
+        info->portB.reg, info->portB.dir, info->timerA.count,
+        info->timerA.latch, info->timerA.running ? "true" : "false",
+        info->timerB.count, info->timerB.latch,
+        info->timerB.running ? "true" : "false", info->icr, info->imr,
+        info->irq ? "true" : "false");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_floppy_info(int drive_num) {
+  static char buffer[1024];
+  try {
+    const FloppyDriveInfo *info = nullptr;
+    switch (drive_num) {
+    case 0:
+      info = &wrapper->emu->df0.getInfo();
+      break;
+    case 1:
+      info = &wrapper->emu->df1.getInfo();
+      break;
+    case 2:
+      info = &wrapper->emu->df2.getInfo();
+      break;
+    case 3:
+      info = &wrapper->emu->df3.getInfo();
+      break;
+    default:
+      return "{\"error\":\"invalid_drive\"}";
+    }
+    snprintf(buffer, sizeof(buffer),
+              "{\"nr\":%d,\"cylinder\":%d,\"head\":%d,\"isConnected\":%s,"
+              "\"hasDisk\":%s,\"hasUnmodifiedDisk\":%s,\"hasModifiedDisk\":%s,"
+              "\"hasProtectedDisk\":%s,\"hasUnprotectedDisk\":%s,\"motor\":%s,"
+              "\"writing\":%s}",
+              (int)info->nr, (int)info->head.cylinder, (int)info->head.head,
+              info->isConnected ? "true" : "false",
+              info->hasDisk ? "true" : "false",
+              info->hasUnmodifiedDisk ? "true" : "false",
+              info->hasModifiedDisk ? "true" : "false",
+              info->hasProtectedDisk ? "true" : "false",
+              info->hasUnprotectedDisk ? "true" : "false",
+              info->motor ? "true" : "false",
+              info->writing ? "true" : "false");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_harddrive_info(int drive_num) {
+  static char buffer[1024];
+  try {
+    const HardDriveInfo *info = nullptr;
+    switch (drive_num) {
+    case 0:
+      info = &wrapper->emu->hd0.getInfo();
+      break;
+    case 1:
+      info = &wrapper->emu->hd1.getInfo();
+      break;
+    case 2:
+      info = &wrapper->emu->hd2.getInfo();
+      break;
+    case 3:
+      info = &wrapper->emu->hd3.getInfo();
+      break;
+    default:
+      return "{\"error\":\"invalid_drive\"}";
+    }
+    snprintf(
+        buffer, sizeof(buffer),
+        "{\"nr\":%d,\"isConnected\":%s,\"isCompatible\":%s,\"hasDisk\":%s,"
+        "\"hasUnmodifiedDisk\":%s,\"hasModifiedDisk\":%s,"
+        "\"hasProtectedDisk\":%s,\"hasUnprotectedDisk\":%s,\"partitions\":%d,"
+        "\"writeProtected\":%s,\"modified\":%s,\"cylinder\":%d,\"head\":%d}",
+        (int)info->nr, info->isConnected ? "true" : "false",
+        info->isCompatible ? "true" : "false",
+        info->hasDisk ? "true" : "false",
+        info->hasUnmodifiedDisk ? "true" : "false",
+        info->hasModifiedDisk ? "true" : "false",
+        info->hasProtectedDisk ? "true" : "false",
+        info->hasUnprotectedDisk ? "true" : "false", (int)info->partitions,
+        info->writeProtected ? "true" : "false",
+        info->modified ? "true" : "false", (int)info->head.cylinder,
+        (int)info->head.head);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_copper_info() {
+  static char buffer[512];
+  try {
+    const auto &info = wrapper->emu->agnus.copper.getInfo();
+    snprintf(buffer, sizeof(buffer),
+              "{\"copList\":%d,\"copList1Start\":\"0x%08X\",\"copList1End\":"
+              "\"0x%08X\",\"copList2Start\":\"0x%08X\",\"copList2End\":\"0x%"
+              "08X\",\"active\":%s,\"cdang\":%s,\"coppc0\":\"0x%08X\","
+              "\"cop1lc\":\"0x%08X\",\"cop2lc\":\"0x%08X\",\"cop1ins\":\"0x%"
+              "04X\",\"cop2ins\":\"0x%04X\"}",
+              (int)info.copList, info.copList1Start, info.copList1End,
+              info.copList2Start, info.copList2End,
+              info.active ? "true" : "false", info.cdang ? "true" : "false",
+              info.coppc0, info.cop1lc, info.cop2lc, info.cop1ins,
+              info.cop2ins);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_blitter_info() {
+  static char buffer[1024];
+  try {
+    const auto &info = wrapper->emu->agnus.blitter.getInfo();
+    snprintf(
+        buffer, sizeof(buffer),
+        "{\"bltcon0\":\"0x%04X\",\"bltcon1\":\"0x%04X\",\"ash\":%d,\"bsh\":%"
+        "d,\"minterm\":\"0x%04X\",\"bltapt\":\"0x%08X\",\"bltbpt\":\"0x%"
+        "08X\",\"bltcpt\":\"0x%08X\",\"bltdpt\":\"0x%08X\",\"bltafwm\":\"0x%"
+        "04X\",\"bltalwm\":\"0x%04X\",\"bbusy\":%s,\"bzero\":%s}",
+        info.bltcon0, info.bltcon1, info.ash, info.bsh, info.minterm,
+        info.bltapt, info.bltbpt, info.bltcpt, info.bltdpt, info.bltafwm,
+        info.bltalwm, info.bbusy ? "true" : "false",
+        info.bzero ? "true" : "false");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_serial_port_info() {
+  static char buffer[512];
+  try {
+    const auto &info = wrapper->emu->serialPort.getInfo();
+    snprintf(buffer, sizeof(buffer),
+              "{\"port\":\"0x%08X\",\"txd\":%s,\"rxd\":%s,\"rts\":%s,\"cts\":%"
+              "s,\"dsr\":%s,\"cd\":%s,\"dtr\":%s}",
+              info.port, info.txd ? "true" : "false",
+              info.rxd ? "true" : "false", info.rts ? "true" : "false",
+              info.cts ? "true" : "false", info.dsr ? "true" : "false",
+              info.cd ? "true" : "false", info.dtr ? "true" : "false");
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_keyboard_info() {
+  static char buffer[512];
+  try {
+    const auto &info = wrapper->emu->keyboard.getInfo();
+    snprintf(buffer, sizeof(buffer), "{\"state\":%d,\"shiftReg\":\"0x%02X\"}",
+              (int)info.state, info.shiftReg);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_control_port_info(int port) {
+  static char buffer[512];
+  try {
+    const ControlPortInfo *info = nullptr;
+    if (port == 1) {
+      info = &wrapper->emu->controlPort1.getInfo();
+    } else if (port == 2) {
+      info = &wrapper->emu->controlPort2.getInfo();
+    } else {
+      return "{\"error\":\"invalid_port\"}";
+    }
+    snprintf(
+        buffer, sizeof(buffer),
+        "{\"m0v\":%s,\"m0h\":%s,\"m1v\":%s,\"m1h\":%s,\"joydat\":\"0x%04X\","
+        "\"potgo\":\"0x%04X\",\"potgor\":\"0x%04X\",\"potdat\":\"0x%04X\"}",
+        info->m0v ? "true" : "false", info->m0h ? "true" : "false",
+        info->m1v ? "true" : "false", info->m1h ? "true" : "false",
+        info->joydat, info->potgo, info->potgor, info->potdat);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+extern "C" const char *wasm_get_disk_controller_info() {
+  static char buffer[512];
+  try {
+    const auto &info = wrapper->emu->paula.diskController.getInfo();
+    snprintf(buffer, sizeof(buffer),
+              "{\"selectedDrive\":%d,\"state\":%d,\"fifoCount\":%d,\"dsklen\":"
+              "\"0x%04X\",\"dskbytr\":\"0x%04X\",\"dsksync\":\"0x%04X\","
+              "\"prb\":\"0x%02X\"}",
+              (int)info.selectedDrive, (int)info.state, info.fifoCount,
+              info.dsklen, info.dskbytr, info.dsksync, info.prb);
+    return buffer;
+  } catch (...) {
+    return "{\"error\":true}";
+  }
+}
+
+
+// Custom:
+
+extern "C" const char *wasm_get_all_custom_registers() {
+  static std::string result_buffer;
+  char hex_buf[16];
+
+  auto *agnus = wrapper->emu->agnus.agnus;
+  auto *denise = wrapper->emu->denise.denise;
+
+  result_buffer = "{";
+
+  // Custom chip registers in address order - register names abstracted (read/write pairs use unified names without 'R' suffix)
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x002));
+  result_buffer += "\"DMACON\":{\"addr\":\"0x002\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x004));
+  result_buffer += "\"VPOS\":{\"addr\":\"0x004\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x006));
+  result_buffer += "\"VHPOS\":{\"addr\":\"0x006\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x008));
+  result_buffer += "\"DSKDAT\":{\"addr\":\"0x008\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x00A));
+  result_buffer += "\"JOY0DAT\":{\"addr\":\"0x00A\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x00C));
+  result_buffer += "\"JOY1DAT\":{\"addr\":\"0x00C\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x00E));
+  result_buffer += "\"CLXDAT\":{\"addr\":\"0x00E\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x010));
+  result_buffer += "\"ADKCON\":{\"addr\":\"0x010\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x012));
+  result_buffer += "\"POT0DAT\":{\"addr\":\"0x012\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x014));
+  result_buffer += "\"POT1DAT\":{\"addr\":\"0x014\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x016));
+  result_buffer += "\"POTGO\":{\"addr\":\"0x016\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x018));
+  result_buffer += "\"SERDAT\":{\"addr\":\"0x018\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x01A));
+  result_buffer += "\"DSKBYT\":{\"addr\":\"0x01A\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x01C));
+  result_buffer += "\"INTENA\":{\"addr\":\"0x01C\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", wrapper->emu->mem.mem->spypeekCustom16(0x01E));
+  result_buffer += "\"INTREQ\":{\"addr\":\"0x01E\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Blitter registers ($040-$07E) - from blitter info
+  auto blitterInfo = wrapper->emu->agnus.blitter.getInfo();
+  sprintf(hex_buf, "\"0x%04X\"", blitterInfo.bltcon0);
+  result_buffer += "\"BLTCON0\":{\"addr\":\"0x040\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", blitterInfo.bltcon1);
+  result_buffer += "\"BLTCON1\":{\"addr\":\"0x042\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", blitterInfo.bltafwm);
+  result_buffer += "\"BLTAFWM\":{\"addr\":\"0x044\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", blitterInfo.bltalwm);
+  result_buffer += "\"BLTALWM\":{\"addr\":\"0x046\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", blitterInfo.bltcpt);
+  result_buffer += "\"BLTCPT\":{\"addr\":\"0x048\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", blitterInfo.bltbpt);
+  result_buffer += "\"BLTBPT\":{\"addr\":\"0x04C\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", blitterInfo.bltapt);
+  result_buffer += "\"BLTAPT\":{\"addr\":\"0x050\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", blitterInfo.bltdpt);
+  result_buffer += "\"BLTDPT\":{\"addr\":\"0x054\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Copper registers ($080-$086)
+  auto copperInfo = wrapper->emu->agnus.copper.getInfo();
+  sprintf(hex_buf, "\"0x%08X\"", copperInfo.cop1lc);
+  result_buffer += "\"COP1LC\":{\"addr\":\"0x080\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", copperInfo.cop2lc);
+  result_buffer += "\"COP2LC\":{\"addr\":\"0x084\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Display window registers ($08E-$096)
+  sprintf(hex_buf, "\"0x%04X\"", denise->diwstrt);
+  result_buffer += "\"DIWSTRT\":{\"addr\":\"0x08E\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->diwstop);
+  result_buffer += "\"DIWSTOP\":{\"addr\":\"0x090\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", agnus->sequencer.ddfstrt);
+  result_buffer += "\"DDFSTRT\":{\"addr\":\"0x092\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", agnus->sequencer.ddfstop);
+  result_buffer += "\"DDFSTOP\":{\"addr\":\"0x094\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", agnus->dmacon);
+  result_buffer += "\"DMACON\":{\"addr\":\"0x096\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->clxcon);
+  result_buffer += "\"CLXCON\":{\"addr\":\"0x098\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Paula registers ($09C-$09E)
+  auto paulaInfo = wrapper->emu->paula.getInfo();
+  sprintf(hex_buf, "\"0x%04X\"", paulaInfo.intena);
+  result_buffer += "\"INTENA\":{\"addr\":\"0x09A\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", paulaInfo.intreq);
+  result_buffer += "\"INTREQ\":{\"addr\":\"0x09C\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", paulaInfo.adkcon);
+  result_buffer += "\"ADKCON\":{\"addr\":\"0x09E\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Audio channel pointers and data ($0A0-$0DF)
+  auto aud0Info = wrapper->emu->paula.audioChannel0.getInfo();
+  auto aud1Info = wrapper->emu->paula.audioChannel1.getInfo();
+  auto aud2Info = wrapper->emu->paula.audioChannel2.getInfo();
+  auto aud3Info = wrapper->emu->paula.audioChannel3.getInfo();
+
+  // Audio Channel 0 ($0A0-$0AB)
+  sprintf(hex_buf, "\"0x%04X\"", aud0Info.audlenLatch);
+  result_buffer += "\"AUD0LEN\":{\"addr\":\"0x0A4\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud0Info.audperLatch);
+  result_buffer += "\"AUD0PER\":{\"addr\":\"0x0A6\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud0Info.audvolLatch);
+  result_buffer += "\"AUD0VOL\":{\"addr\":\"0x0A8\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud0Info.auddat);
+  result_buffer += "\"AUD0DAT\":{\"addr\":\"0x0AA\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Audio Channel 1 ($0B0-$0BB)
+  sprintf(hex_buf, "\"0x%04X\"", aud1Info.audlenLatch);
+  result_buffer += "\"AUD1LEN\":{\"addr\":\"0x0B4\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud1Info.audperLatch);
+  result_buffer += "\"AUD1PER\":{\"addr\":\"0x0B6\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud1Info.audvolLatch);
+  result_buffer += "\"AUD1VOL\":{\"addr\":\"0x0B8\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud1Info.auddat);
+  result_buffer += "\"AUD1DAT\":{\"addr\":\"0x0BA\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Audio Channel 2 ($0C0-$0CB)
+  sprintf(hex_buf, "\"0x%04X\"", aud2Info.audlenLatch);
+  result_buffer += "\"AUD2LEN\":{\"addr\":\"0x0C4\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud2Info.audperLatch);
+  result_buffer += "\"AUD2PER\":{\"addr\":\"0x0C6\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud2Info.audvolLatch);
+  result_buffer += "\"AUD2VOL\":{\"addr\":\"0x0C8\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud2Info.auddat);
+  result_buffer += "\"AUD2DAT\":{\"addr\":\"0x0CA\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Audio Channel 3 ($0D0-$0DB)
+  sprintf(hex_buf, "\"0x%04X\"", aud3Info.audlenLatch);
+  result_buffer += "\"AUD3LEN\":{\"addr\":\"0x0D4\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud3Info.audperLatch);
+  result_buffer += "\"AUD3PER\":{\"addr\":\"0x0D6\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud3Info.audvolLatch);
+  result_buffer += "\"AUD3VOL\":{\"addr\":\"0x0D8\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", aud3Info.auddat);
+  result_buffer += "\"AUD3DAT\":{\"addr\":\"0x0DA\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Bitplane pointers ($0E0-$0F4) - 32-bit values
+  sprintf(hex_buf, "\"0x%08X\"", agnus->bplpt[0]);
+  result_buffer += "\"BPL1PT\":{\"addr\":\"0x0E0\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->bplpt[1]);
+  result_buffer += "\"BPL2PT\":{\"addr\":\"0x0E4\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->bplpt[2]);
+  result_buffer += "\"BPL3PT\":{\"addr\":\"0x0E8\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->bplpt[3]);
+  result_buffer += "\"BPL4PT\":{\"addr\":\"0x0EC\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->bplpt[4]);
+  result_buffer += "\"BPL5PT\":{\"addr\":\"0x0F0\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->bplpt[5]);
+  result_buffer += "\"BPL6PT\":{\"addr\":\"0x0F4\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Display control registers ($100-$10A)
+  sprintf(hex_buf, "\"0x%04X\"", denise->bplcon0);
+  result_buffer += "\"BPLCON0\":{\"addr\":\"0x100\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bplcon1);
+  result_buffer += "\"BPLCON1\":{\"addr\":\"0x102\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bplcon2);
+  result_buffer += "\"BPLCON2\":{\"addr\":\"0x104\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bplcon3);
+  result_buffer += "\"BPLCON3\":{\"addr\":\"0x106\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", agnus->bpl1mod);
+  result_buffer += "\"BPL1MOD\":{\"addr\":\"0x108\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", agnus->bpl2mod);
+  result_buffer += "\"BPL2MOD\":{\"addr\":\"0x10A\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Bitplane data registers ($110-$11A)
+  sprintf(hex_buf, "\"0x%04X\"", denise->bpldat[0]);
+  result_buffer += "\"BPL1DAT\":{\"addr\":\"0x110\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bpldat[1]);
+  result_buffer += "\"BPL2DAT\":{\"addr\":\"0x112\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bpldat[2]);
+  result_buffer += "\"BPL3DAT\":{\"addr\":\"0x114\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bpldat[3]);
+  result_buffer += "\"BPL4DAT\":{\"addr\":\"0x116\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bpldat[4]);
+  result_buffer += "\"BPL5DAT\":{\"addr\":\"0x118\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", denise->bpldat[5]);
+  result_buffer += "\"BPL6DAT\":{\"addr\":\"0x11A\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Sprite pointers ($120-$13C) - 32-bit values
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[0]);
+  result_buffer += "\"SPR0PT\":{\"addr\":\"0x120\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[1]);
+  result_buffer += "\"SPR1PT\":{\"addr\":\"0x124\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[2]);
+  result_buffer += "\"SPR2PT\":{\"addr\":\"0x128\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[3]);
+  result_buffer += "\"SPR3PT\":{\"addr\":\"0x12C\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[4]);
+  result_buffer += "\"SPR4PT\":{\"addr\":\"0x130\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[5]);
+  result_buffer += "\"SPR5PT\":{\"addr\":\"0x134\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[6]);
+  result_buffer += "\"SPR6PT\":{\"addr\":\"0x138\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%08X\"", agnus->sprpt[7]);
+  result_buffer += "\"SPR7PT\":{\"addr\":\"0x13C\",\"value\":" + std::string(hex_buf) + "},";
+
+  // Sprite data and position registers ($140-$17F)
+  for (int i = 0; i < 8; i++) {
+    char addr_str[8];
+    sprintf(addr_str, "0x%03X", 0x140 + i * 8);
+    sprintf(hex_buf, "\"0x%04X\"", denise->sprpos[i]);
+    result_buffer += "\"SPR" + std::to_string(i) + "POS\":{\"addr\":\"" + addr_str + "\",\"value\":" + std::string(hex_buf) + "},";
+
+    sprintf(addr_str, "0x%03X", 0x142 + i * 8);
+    sprintf(hex_buf, "\"0x%04X\"", denise->sprctl[i]);
+    result_buffer += "\"SPR" + std::to_string(i) + "CTL\":{\"addr\":\"" + addr_str + "\",\"value\":" + std::string(hex_buf) + "},";
+
+    sprintf(addr_str, "0x%03X", 0x144 + i * 8);
+    sprintf(hex_buf, "\"0x%04X\"", denise->sprdata[i]);
+    result_buffer += "\"SPR" + std::to_string(i) + "DATA\":{\"addr\":\"" + addr_str + "\",\"value\":" + std::string(hex_buf) + "},";
+
+    sprintf(addr_str, "0x%03X", 0x146 + i * 8);
+    sprintf(hex_buf, "\"0x%04X\"", denise->sprdatb[i]);
+    result_buffer += "\"SPR" + std::to_string(i) + "DATB\":{\"addr\":\"" + addr_str + "\",\"value\":" + std::string(hex_buf) + "},";
+  }
+
+  // Color palette ($180-$1BE) - all 32 colors
+  for (int i = 0; i < 32; i++) {
+    char addr_str[8];
+    sprintf(addr_str, "0x%03X", 0x180 + (i * 2));
+    char colorName[8];
+    sprintf(colorName, "COLOR%02d", i);
+    sprintf(hex_buf, "\"0x%04X\"", denise->pixelEngine.getColor(i));
+    result_buffer += "\"" + std::string(colorName) + "\":{\"addr\":\"" + addr_str + "\",\"value\":" + std::string(hex_buf) + "}";
+    if (i < 31) result_buffer += ",";
+  }
+
+  // Add disk controller registers if available
+  auto diskInfo = wrapper->emu->paula.diskController.getInfo();
+  sprintf(hex_buf, "\"0x%04X\"", diskInfo.dsklen);
+  result_buffer += ",\"DSKLEN\":{\"addr\":\"0x024\",\"value\":" + std::string(hex_buf) + "},";
+
+  sprintf(hex_buf, "\"0x%04X\"", diskInfo.dsksync);
+  result_buffer += "\"DSKSYNC\":{\"addr\":\"0x07E\",\"value\":" + std::string(hex_buf) + "}";
+
+  result_buffer += "}";
+
+  return result_buffer.c_str();
+}
+
+extern "C" const char *wasm_set_custom_register(const char* reg_name, u32 value) {
+  static char result_buffer[256];
+
+  // Helper function for 16-bit register writes
+  auto write16 = [&](u16 addr, u32 val) -> const char* {
+    wrapper->emu->mem.mem->pokeCustom16<Accessor::CPU>(addr, val & 0xFFFF);
+    snprintf(result_buffer, sizeof(result_buffer), "{\"success\":true,\"register\":\"%s\",\"value\":\"0x%04X\"}", reg_name, val & 0xFFFF);
+    return result_buffer;
+  };
+
+  // Helper function for 32-bit register writes (split into high/low words)
+  auto write32 = [&](u16 high_addr, u16 low_addr, u32 val) -> const char* {
+    wrapper->emu->mem.mem->pokeCustom16<Accessor::CPU>(high_addr, (val >> 16) & 0xFFFF);
+    wrapper->emu->mem.mem->pokeCustom16<Accessor::CPU>(low_addr, val & 0xFFFF);
+    snprintf(result_buffer, sizeof(result_buffer), "{\"success\":true,\"register\":\"%s\",\"value\":\"0x%08X\"}", reg_name, val);
+    return result_buffer;
+  };
+
+  try {
+    std::string regName(reg_name);
+
+    // Handle read variants by mapping them to write variants
+    if (regName == "DMACONR") regName = "DMACON";
+    else if (regName == "ADKCONR") regName = "ADKCON";
+    else if (regName == "INTENAR") regName = "INTENA";
+    else if (regName == "INTREQR") regName = "INTREQ";
+    else if (regName == "VPOSR") regName = "VPOS";
+    else if (regName == "VHPOSR") regName = "VHPOS";
+    else if (regName == "DSKDATR") regName = "DSKDAT";
+    else if (regName == "POTGOR") regName = "POTGO";
+    else if (regName == "SERDATR") regName = "SERDAT";
+    else if (regName == "DSKBYTR") regName = "DSKBYT";
+
+    // 16-bit register lookup table
+    static const std::unordered_map<std::string, u16> reg16_map = {
+      // Main control registers
+      {"DMACON", 0x096}, {"INTENA", 0x09A}, {"INTREQ", 0x09C}, {"ADKCON", 0x09E},
+      // Blitter control
+      {"BLTCON0", 0x040}, {"BLTCON1", 0x042}, {"BLTAFWM", 0x044}, {"BLTALWM", 0x046},
+      // Display window
+      {"DIWSTRT", 0x08E}, {"DIWSTOP", 0x090}, {"DDFSTRT", 0x092}, {"DDFSTOP", 0x094}, {"CLXCON", 0x098},
+      // Display control
+      {"BPLCON0", 0x100}, {"BPLCON1", 0x102}, {"BPLCON2", 0x104}, {"BPLCON3", 0x106},
+      {"BPL1MOD", 0x108}, {"BPL2MOD", 0x10A},
+      // Bitplane data
+      {"BPL1DAT", 0x110}, {"BPL2DAT", 0x112}, {"BPL3DAT", 0x114},
+      {"BPL4DAT", 0x116}, {"BPL5DAT", 0x118}, {"BPL6DAT", 0x11A},
+      // Audio channels
+      {"AUD0LEN", 0x0A4}, {"AUD0PER", 0x0A6}, {"AUD0VOL", 0x0A8}, {"AUD0DAT", 0x0AA},
+      {"AUD1LEN", 0x0B4}, {"AUD1PER", 0x0B6}, {"AUD1VOL", 0x0B8}, {"AUD1DAT", 0x0BA},
+      {"AUD2LEN", 0x0C4}, {"AUD2PER", 0x0C6}, {"AUD2VOL", 0x0C8}, {"AUD2DAT", 0x0CA},
+      {"AUD3LEN", 0x0D4}, {"AUD3PER", 0x0D6}, {"AUD3VOL", 0x0D8}, {"AUD3DAT", 0x0DA},
+      // Disk controller
+      {"DSKLEN", 0x024}, {"DSKSYNC", 0x07E}
+    };
+
+    // 32-bit register lookup table (high addr, low addr)
+    static const std::unordered_map<std::string, std::pair<u16, u16>> reg32_map = {
+      // Copper
+      {"COP1LC", {0x080, 0x082}}, {"COP2LC", {0x084, 0x086}},
+      // Blitter pointers
+      {"BLTAPT", {0x050, 0x052}}, {"BLTBPT", {0x04C, 0x04E}},
+      {"BLTCPT", {0x048, 0x04A}}, {"BLTDPT", {0x054, 0x056}},
+      // Bitplane pointers
+      {"BPL1PT", {0x0E0, 0x0E2}}, {"BPL2PT", {0x0E4, 0x0E6}}, {"BPL3PT", {0x0E8, 0x0EA}},
+      {"BPL4PT", {0x0EC, 0x0EE}}, {"BPL5PT", {0x0F0, 0x0F2}}, {"BPL6PT", {0x0F4, 0x0F6}},
+      // Sprite pointers
+      {"SPR0PT", {0x120, 0x122}}, {"SPR1PT", {0x124, 0x126}}, {"SPR2PT", {0x128, 0x12A}},
+      {"SPR3PT", {0x12C, 0x12E}}, {"SPR4PT", {0x130, 0x132}}, {"SPR5PT", {0x134, 0x136}},
+      {"SPR6PT", {0x138, 0x13A}}, {"SPR7PT", {0x13C, 0x13E}},
+      // Audio pointers
+      {"AUD0LC", {0x0A0, 0x0A2}}, {"AUD1LC", {0x0B0, 0x0B2}},
+      {"AUD2LC", {0x0C0, 0x0C2}}, {"AUD3LC", {0x0D0, 0x0D2}}
+    };
+
+    // Check 16-bit registers first
+    auto reg16_it = reg16_map.find(regName);
+    if (reg16_it != reg16_map.end()) {
+      return write16(reg16_it->second, value);
+    }
+
+    // Check 32-bit registers
+    auto reg32_it = reg32_map.find(regName);
+    if (reg32_it != reg32_map.end()) {
+      return write32(reg32_it->second.first, reg32_it->second.second, value);
+    }
+
+    // Handle sprite control and data registers dynamically
+    if (regName.substr(0, 3) == "SPR" && regName.length() >= 7) {
+      char sprite_num = regName[3];
+      if (sprite_num >= '0' && sprite_num <= '7') {
+        int sprite_idx = sprite_num - '0';
+        std::string reg_type = regName.substr(4);
+
+        if (reg_type == "POS") {
+          return write16(0x140 + sprite_idx * 8, value);
+        } else if (reg_type == "CTL") {
+          return write16(0x142 + sprite_idx * 8, value);
+        } else if (reg_type == "DATA") {
+          return write16(0x144 + sprite_idx * 8, value);
+        } else if (reg_type == "DATB") {
+          return write16(0x146 + sprite_idx * 8, value);
+        }
+      }
+    }
+
+    // Handle color palette dynamically
+    if (regName.substr(0, 5) == "COLOR" && regName.length() == 7) {
+      std::string color_str = regName.substr(5, 2);
+      int color_num = std::stoi(color_str);
+      if (color_num >= 0 && color_num <= 31) {
+        return write16(0x180 + (color_num * 2), value);
+      }
+    }
+
+    // Error handling for specific read-only data registers
+    if (regName == "JOY0DAT" || regName == "JOY1DAT" ||
+        regName == "POT0DAT" || regName == "POT1DAT" ||
+        regName == "CLXDAT") {
+      snprintf(result_buffer, sizeof(result_buffer), "{\"error\":true,\"message\":\"Read-only hardware data register\",\"register\":\"%s\"}", reg_name);
+      return result_buffer;
+    }
+
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":true,\"message\":\"Unknown or unsupported register\",\"register\":\"%s\"}", reg_name);
+    return result_buffer;
+
+  } catch (const std::exception& e) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":true,\"message\":\"Exception: %s\"}", e.what());
+    return result_buffer;
+  } catch (...) {
+    snprintf(result_buffer, sizeof(result_buffer), "{\"error\":true,\"message\":\"Unknown error occurred\"}");
+    return result_buffer;
+  }
+}
+
+extern "C" const char *wasm_get_current_process() {
+  static std::string result_buffer;
+
+  try {
+    // Get ExecBase from address 4 (like WinUAE)
+    u32 execbase = wasm_peek32(4);
+
+    // Get ThisTask from ExecBase + 276 (like WinUAE)
+    u32 activetask = wasm_peek32(execbase + 276);
+    if (!activetask) {
+      result_buffer = "{\"error\":\"No active task\"}";
+      return result_buffer.c_str();
+    }
+
+    // Check if it's a process (ln_Type == NT_PROCESS = 13)
+    u8 tasktype =
+        wrapper->emu->mem.mem->spypeek8<Accessor::CPU>(activetask + 8);
+    if (tasktype != 13) {
+      result_buffer = "{\"error\":\"Active task is not a process\"}";
+      return result_buffer.c_str();
+    }
+
+    u32 cliPtr = wasm_peek32(activetask + 172);
+    if (!cliPtr) {
+      result_buffer = "{\"error\":\"Active process has no CLI\"}";
+      return result_buffer.c_str();
+    }
+    // Convert BPTR to APTR (multiply by 4)
+    u32 cli = cliPtr << 2;
+
+    // Get task name from ln_Name (activetask + 10)
+    u32 namePtr = wasm_peek32(activetask + 10);
+    std::string taskName;
+    if (namePtr) {
+      // Read null-terminated string
+      for (int i = 0; i < 64; i++) {
+        u8 c = wrapper->emu->mem.mem->spypeek8<Accessor::CPU>(namePtr + i);
+        if (c == 0)
+          break;
+        taskName += (char)c;
+      }
+    }
+
+    result_buffer = "{";
+    result_buffer += "\"address\":" + std::to_string(activetask) + ",";
+    result_buffer += "\"name\":\"" + taskName + "\"";
+
+    // Get CLI command name (cli + 16)
+    u32 cmdPtr = wasm_peek32(cli + 16);
+    if (cmdPtr) {
+      u32 cmdAddr = cmdPtr << 2; // BPTR to APTR
+      u8 cmdLen = wrapper->emu->mem.mem->spypeek8<Accessor::CPU>(cmdAddr);
+      std::string command;
+      for (int i = 0; i < cmdLen && i < 63; i++) {
+        command += (char)wrapper->emu->mem.mem->spypeek8<Accessor::CPU>(
+            cmdAddr + 1 + i);
+      }
+      result_buffer += ",\"command\":\"" + command + "\"";
+    }
+
+    // Get seglist (cli + 60)
+    u32 seglistPtr = wasm_peek32(cli + 60);
+    if (seglistPtr) {
+      u32 seglistAddr = seglistPtr << 2;
+      result_buffer += ",\"segments\":[";
+
+      // Walk the seglist and include all segments
+      u32 seglist = seglistAddr;
+      bool firstSeg = true;
+      while (seglist) {
+        u32 size = wasm_peek32(seglist - 4) - 4;
+        if (!firstSeg)
+          result_buffer += ",";
+        firstSeg = false;
+
+        result_buffer += "{";
+        result_buffer += "\"start\":" + std::to_string(seglist + 4) + ",";
+        result_buffer += "\"size\":" + std::to_string(size);
+        result_buffer += "}";
+
+        u32 nextPtr = wasm_peek32(seglist);
+        seglist = nextPtr ? (nextPtr << 2) : 0;
+
+        // Safety check
+        if (!firstSeg && seglist == seglistAddr)
+          break;
+      }
+      result_buffer += "]";
+    }
+
+    result_buffer += "}";
+
+  } catch (...) {
+    result_buffer = "{\"error\":\"Failed to read current process\"}";
+  }
+
+  return result_buffer.c_str();
+}
+
+extern "C" const char *wasm_get_call_stack(u32 depth) {
+  static std::string result_buffer;
+
+  if (wrapper == NULL) {
+    result_buffer = "{\"error\":\"Wrapper not initialized\"}";
+    return result_buffer.c_str();
+  }
+
+  try {
+    auto cpuInfo = wrapper->emu->cpu.getInfo();
+    u32 stackPtr = cpuInfo.a[7]; // A7 is stack pointer
+
+    // Limit depth to reasonable amount
+    if (depth > 64)
+      depth = 64;
+    if (depth == 0)
+      depth = 16; // Default depth
+
+    result_buffer = "[";
+    result_buffer += "\"callStack\":[";
+
+    bool first = true;
+
+    // Scan stack for likely return addresses (stack grows downward,
+    // word-aligned) Scan in 2-byte increments since stack is word-aligned
+    for (u32 i = 0; i < depth * 2; i++) {
+      u32 addr = stackPtr + (i * 2);
+
+      // Try reading as 32-bit address first
+      u32 value = 0;
+      bool foundValue = false;
+
+      // Check if we can read 32-bit value (most return addresses are 32-bit)
+      if (i % 2 == 0 &&
+          i < (depth * 2 - 1)) { // Make sure we don't read past our scan limit
+        try {
+          u16 high = wrapper->emu->mem.debugger.spypeek16(Accessor::CPU, addr);
+          u16 low =
+              wrapper->emu->mem.debugger.spypeek16(Accessor::CPU, addr + 2);
+          value = (high << 16) | low;
+          foundValue = true;
+        } catch (...) {
+          // Fall through to try 16-bit read
+        }
+      }
+
+      // If 32-bit read failed or we're at an odd offset, try 16-bit
+      if (!foundValue) {
+        try {
+          u16 word = wrapper->emu->mem.debugger.spypeek16(Accessor::CPU, addr);
+          // Only consider 16-bit values that could be reasonable addresses
+          if (word >= 0x1000) {
+            value = word;
+            foundValue = true;
+          }
+        } catch (...) {
+          continue;
+        }
+      }
+
+      if (!foundValue)
+        continue;
+
+      // Skip if value looks invalid (null, too low, or too high)
+      if (value == 0 || value < 0x1000 || value > 0x2000000) {
+        continue;
+      }
+
+      // Stop when we reach ROM addresses (Kickstart ROM area)
+      // Amiga ROM is typically at 0xF80000-0xFFFFFF
+      if (value >= 0xF80000) {
+        break; // Stop tracing into ROM/OS code
+      }
+
+      // Check if this could be a return address by looking at the preceding
+      // instruction
+      try {
+        // Return addresses point to instruction after JSR/BSR
+        // JSR can be 2, 4, or 6 bytes depending on addressing mode
+        // BSR is 2 or 4 bytes
+        bool isReturnAddr = false;
+
+        // Check 2 bytes back (for BSR.W or JSR with short addressing)
+        u32 checkAddr = value - 2;
+        u16 instr =
+            wrapper->emu->mem.debugger.spypeek16(Accessor::CPU, checkAddr);
+        if ((instr & 0xFF00) == 0x6100) { // BSR.W
+          isReturnAddr = true;
+        } else if ((instr & 0xFFC0) == 0x4E80) { // JSR
+          isReturnAddr = true;
+        }
+
+        // Check 4 bytes back (for BSR.L or JSR with longer addressing)
+        if (!isReturnAddr) {
+          checkAddr = value - 4;
+          instr =
+              wrapper->emu->mem.debugger.spypeek16(Accessor::CPU, checkAddr);
+          if (instr == 0x61FF) { // BSR.L
+            isReturnAddr = true;
+          } else if ((instr & 0xFFC0) == 0x4E80) { // JSR variants
+            isReturnAddr = true;
+          }
+        }
+
+        // Check 6 bytes back (for JSR with absolute long addressing)
+        if (!isReturnAddr) {
+          checkAddr = value - 6;
+          instr =
+              wrapper->emu->mem.debugger.spypeek16(Accessor::CPU, checkAddr);
+          if ((instr & 0xFFC0) == 0x4E80) { // JSR variants
+            isReturnAddr = true;
+          }
+        }
+
+        if (isReturnAddr) {
+          if (!first)
+            result_buffer += ",";
+          first = false;
+
+          result_buffer += std::to_string(value);
+        }
+
+      } catch (...) {
+        // Skip if we can't read the preceding instruction
+        continue;
+      }
+    }
+
+    result_buffer += "]";
+    result_buffer += "}";
+
+  } catch (...) {
+    result_buffer = "{\"error\":\"Failed to analyze call stack\"}";
+  }
+
+  return result_buffer.c_str();
+}
+
+extern "C" const char* wasm_get_current_message() {
+    static std::string result_buffer;
+
+    if (!hasLastMessage) {
+        result_buffer = "{\"hasMessage\":false}";
+        return result_buffer.c_str();
+    }
+
+    const char* msgName = vamiga::MsgEnum::key(lastMessage.type);
+
+    result_buffer = "{";
+    result_buffer += "\"hasMessage\":true,";
+    result_buffer += "\"type\":" + std::to_string((int)lastMessage.type) + ",";
+    result_buffer += "\"name\":\"" + std::string(msgName) + "\",";
+
+    // Decode payload based on message type
+    switch (lastMessage.type) {
+        case vamiga::Msg::BREAKPOINT_REACHED:
+        case vamiga::Msg::WATCHPOINT_REACHED:
+        case vamiga::Msg::CATCHPOINT_REACHED:
+        case vamiga::Msg::SWTRAP_REACHED:
+        case vamiga::Msg::BEAMTRAP_REACHED:
+        case vamiga::Msg::COPPERBP_REACHED:
+        case vamiga::Msg::COPPERWP_REACHED:
+        case vamiga::Msg::STEP:
+            result_buffer += "\"payload\":{";
+            result_buffer += "\"pc\":" + std::to_string(lastMessage.cpu.pc) + ",";
+            result_buffer += "\"vector\":" + std::to_string(lastMessage.cpu.vector);
+            result_buffer += "}";
+            break;
+
+        case vamiga::Msg::DRIVE_CONNECT:
+        case vamiga::Msg::DRIVE_LED:
+        case vamiga::Msg::DRIVE_MOTOR:
+        case vamiga::Msg::DRIVE_STEP:
+        case vamiga::Msg::DRIVE_POLL:
+        case vamiga::Msg::DISK_INSERT:
+        case vamiga::Msg::DISK_EJECT:
+            result_buffer += "\"payload\":{";
+            result_buffer += "\"nr\":" + std::to_string(lastMessage.drive.nr) + ",";
+            result_buffer += "\"value\":" + std::to_string(lastMessage.drive.value) + ",";
+            result_buffer += "\"volume\":" + std::to_string(lastMessage.drive.volume) + ",";
+            result_buffer += "\"pan\":" + std::to_string(lastMessage.drive.pan);
+            result_buffer += "}";
+            break;
+
+        case vamiga::Msg::VIEWPORT:
+            result_buffer += "\"payload\":{";
+            result_buffer += "\"hstrt\":" + std::to_string(lastMessage.viewport.hstrt) + ",";
+            result_buffer += "\"vstrt\":" + std::to_string(lastMessage.viewport.vstrt) + ",";
+            result_buffer += "\"hstop\":" + std::to_string(lastMessage.viewport.hstop) + ",";
+            result_buffer += "\"vstop\":" + std::to_string(lastMessage.viewport.vstop);
+            result_buffer += "}";
+            break;
+
+        default:
+            // For simple value messages
+            result_buffer += "\"payload\":{";
+            result_buffer += "\"value1\":" + std::to_string(lastMessage.value) + ",";
+            result_buffer += "\"value2\":" + std::to_string(lastMessage.value2);
+            result_buffer += "}";
+            break;
+    }
+
+    result_buffer += "}";
+
+    return result_buffer.c_str();
+}
+
+extern "C" void wasm_clear_current_message() {
+    hasLastMessage = false;
 }

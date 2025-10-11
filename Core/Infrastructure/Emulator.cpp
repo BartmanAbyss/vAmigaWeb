@@ -357,23 +357,23 @@ Emulator::softReset()
 void
 Emulator::stepInto()
 {
-    if (isRunning()) return;
+    // Note: In WebAssembly builds, we only set up the softstop but don't call run()
+    // The user must call wasm_run() separately to execute the step
     main.cpu.debugger.stepInto();
-    run();
 }
 
 void
 Emulator::stepOver()
 {
-    if (isRunning()) return;
+    // Note: In WebAssembly builds, we only set up the softstop but don't call run()
+    // The user must call wasm_run() separately to execute the step
     main.cpu.debugger.stepOver();
-    run();
 }
 
 void
 Emulator::finishLine()
 {
-    if (isRunning()) return;
+    // Note: isRunning() check removed due to WebAssembly state transition issues
     main.agnus.dmaDebugger.eolTrap = true;
     run();
 }
@@ -381,7 +381,7 @@ Emulator::finishLine()
 void
 Emulator::finishFrame()
 {
-    if (isRunning()) return;
+    // Note: isRunning() check removed due to WebAssembly state transition issues
     main.agnus.dmaDebugger.eofTrap = true;
     run();
 }
