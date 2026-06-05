@@ -9,6 +9,7 @@
 #include "MoiraConfig.h"
 #include "Moira.h"
 #include "MoiraMacros.h"
+#include "CpuProfiler.h" // [vscode-vamiga-debugger cpu profiler]
 
 #include <cstdio>
 #include <algorithm>
@@ -321,6 +322,9 @@ Moira::execute()
             debugger.logInstruction();
         }
 
+        // [vscode-vamiga-debugger cpu profiler] Snapshot pre-execution PC/A5/A7 + clock.
+        if (flags & PROFILING) vamiga::CpuProfiler::beginInstr(reg.pc0, reg.a[5], reg.sp, clock);
+
         // Execute the instruction
         reg.pc += 2;
 
@@ -339,6 +343,9 @@ Moira::execute()
         }
 
     done:
+
+        // [vscode-vamiga-debugger cpu profiler] Capture cycle delta + unwind the call stack.
+        if (flags & PROFILING) vamiga::CpuProfiler::endInstr(clock);
 
         // Check if a breakpoint has been reached
         if (flags & CHECK_BP) {
