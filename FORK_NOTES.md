@@ -73,6 +73,52 @@ the cycle delta and unwinds. Interrupt/exception paths that `goto done` skip
 `beginInstr`, so `endInstr` no-ops (its pending flag is clear). All real logic is in
 `Core/Profiler/`.
 
+## DMA profiler
+
+A per-DMA-cycle bus profiler, sibling of the CPU profiler, captured in the **same
+frame** (it rides `wasm_profile_start`). It records one 8-byte cell per dma-cycle —
+`{ owner, flags, data, addr }` — into a frame-wide "enriched grid", plus a chip/slow-RAM
+snapshot at capture start. The host uses the grid to draw a DMA channel line + per-channel
+totals, and (future) to reconstruct memory by replaying the grid's WRITE cells over the
+snapshot. The grid is built by mirroring Agnus's per-line `busOwner/busAddr/busData` at
+EOL; the two things those arrays lack — read-vs-write and byte-vs-word — are added as a
+`flags` byte (`WRITE|BYTE|CODE` + 2-bit Copper sub-state) stamped at the write sites.
+
+**New, fork-local files (no merge surface):**
+- `Core/Profiler/DmaProfiler.h`
+- `Core/Profiler/DmaProfiler.cpp`
+- (built via the existing `Core/Profiler/CMakeLists.txt`)
+
+**Hooks in upstream files** (marker `// [vscode-vamiga-debugger dma profiler]`). All
+per-cycle hooks are gated inline by `DmaProfiler::enabled()` so normal emulation pays
+only a branch:
+
+| File | Site | Hook |
+|------|------|------|
+| `Core/Profiler/CMakeLists.txt` | sources | `DmaProfiler.cpp` |
+| `Core/Components/CPU/Moira/Moira.h` | near `enableProfiling` | `fcIsProgram()` — CPU Code/Data from the function code `fcl` |
+| `Core/Components/Agnus/Copper/Copper.h` | public accessors | `dmaSubState()` — current copper command type (MOVE/WAIT/SKIP) |
+| `Core/Components/Agnus/Agnus.cpp` | include block | `#include "DmaProfiler.h"` |
+| `Core/Components/Agnus/Agnus.cpp` | `eolHandler` after `dmaDebugger.eolHandler()` | `recordLine(pos.v, busOwner, busAddr, busData)` — fold the line into the grid before the busOwner table is cleared |
+| `Core/Components/Agnus/Agnus.cpp` | `executeUntilBusIsFree` after `busOwner = CPU` | `markCpu(pos.h, cpu.fcIsProgram())` |
+| `Core/Components/Agnus/AgnusDma.cpp` | include block | `#include "DmaProfiler.h"` |
+| `Core/Components/Agnus/AgnusDma.cpp` | `doCopperDmaRead` | `markCopper(pos.h, copper.dmaSubState())` |
+| `Core/Components/Agnus/AgnusDma.cpp` | `doDiskDmaWrite` / `doBlitterDmaWrite` | `markWrite(pos.h, false)` |
+| `Core/Components/Agnus/AgnusDma.cpp` | `doCopperDmaWrite` | `markWrite(pos.h,false)` + `markCopper(pos.h, COP_SUB_MOVE)` |
+| `Core/Components/Memory/Memory.cpp` | include block | `#include "DmaProfiler.h"` |
+| `Core/Components/Memory/Memory.cpp` | `poke8/16 <CPU,CHIP>`, `<CPU,SLOW>`, `poke16<CPU,CUSTOM>` after the busAddr/busData stamp | `markWrite(pos.h, isByte)` |
+| `main.cpp` | include block | `#include "DmaProfiler.h"` |
+| `main.cpp` | `wasm_profile_start` alongside `CpuProfiler::start/stop` | `DmaProfiler::setMemory/start/stop` (same frame) |
+| `main.cpp` | after `wasm_profile_get_data` | `wasm_dma_get_data` / `wasm_dma_get_snapshot` exports |
+| `CMakeLists.txt` (top level) | `EXPORTED_FUNCTIONS` | `_wasm_dma_get_data`, `_wasm_dma_get_snapshot` |
+
+**Scope / known gaps (this phase):** Blitter is a single color (no per-channel/Fill/Line —
+that needs `SlowBlitter` state, deferred to the blitter-visualizer phase). PAL only. The
+custom-register baseline snapshot is deferred (write-only regs aren't exposed via spypeek);
+copper color-register writes (`0x180..0x1BE`) bypass `doCopperDmaWrite` in vAmiga so they
+aren't in the grid; FAST-RAM writes bypass the chip bus. Reconstruction (chip+slow RAM +
+custom registers) is data-only/unwired this phase.
+
 ## Other fork infrastructure
 - Build fix for recent emsdk: `'HEAPU8','HEAPF32'` added to `EXPORTED_RUNTIME_METHODS`
   in the top-level `CMakeLists.txt` (commit "fix build with latest emsdk").
