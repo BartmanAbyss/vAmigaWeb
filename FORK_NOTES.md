@@ -61,17 +61,38 @@ gated by a new Moira state flag and bracketed at frame boundaries.
 | `Core/Components/CPU/Moira/MoiraTypes.h` | `namespace State` | `PROFILING = (1 << 10)` — first free flag bit (8/9 are CHECK_WP/CHECK_CP) |
 | `Core/Components/CPU/Moira/Moira.h` | clock accessors | `enableProfiling()/disableProfiling()` — set/clear the flag (forces the execute() slow path) |
 | `Core/Components/CPU/Moira/Moira.cpp` | include block | `#include "CpuProfiler.h"` |
-| `Core/Components/CPU/Moira/Moira.cpp` | `execute()` after the `LOGGING` block | `if (flags & PROFILING) CpuProfiler::beginInstr(reg.pc0, reg.a[5], reg.sp, clock);` |
+| `Core/Components/CPU/Moira/Moira.cpp` | `execute()` after the `LOGGING` block | `if (flags & PROFILING) CpuProfiler::beginInstr(reg.pc0, reg.a[5], reg.sp, reg.sr.s, clock);` |
 | `Core/Components/CPU/Moira/Moira.cpp` | `execute()` at the `done:` label | `if (flags & PROFILING) CpuProfiler::endInstr(clock);` |
+| `Core/Components/CPU/Moira/MoiraExec_cpp.h` | `execJsr` (both branches), after `push(reg.pc)` | `if (flags & State::PROFILING) CpuProfiler::BranchStack::push(reg.sr.s, reg.pc, reg.sp);` |
+| `Core/Components/CPU/Moira/MoiraExec_cpp.h` | `execBsr` (both branches), after `push(retpc)` | `if (flags & State::PROFILING) CpuProfiler::BranchStack::push(reg.sr.s, retpc, reg.sp);` |
+| `Core/Components/CPU/Moira/MoiraExec_cpp.h` | `execRts`, after `setPC(newpc)` (cycle row `16,16,10`) | `if (flags & State::PROFILING) CpuProfiler::BranchStack::popRts(reg.sr.s, newpc);` |
+| `Core/Components/CPU/Moira/MoiraExec_cpp.h` | `execRte`, after `setPC(newpc)` (cycle row `20,24,20`) | `if (flags & State::PROFILING) CpuProfiler::BranchStack::popRte(newpc);` |
+| `Core/Components/CPU/Moira/MoiraExceptions_cpp.h` | `execException<C>` after `setSupervisorMode(true)` | `if (flags & State::PROFILING) CpuProfiler::BranchStack::enterException(reg.pc, reg.sp);` |
+| `Core/Components/CPU/Moira/MoiraExceptions_cpp.h` | `execInterrupt<C>` before `jumpToVector` | `if (flags & State::PROFILING) CpuProfiler::BranchStack::enterException(reg.pc, reg.sp);` |
 | `main.cpp` | include block | `#include "CpuProfiler.h"` |
 | `main.cpp` | near `wasm_write_memory` | `wasm_profile_set_unwind/start/stop/get_data` wasm exports |
 | `CMakeLists.txt` (top level) | `EXPORTED_FUNCTIONS` | the four `_wasm_profile_*` symbols |
 
 The begin/end hooks sit in the slow path only (the PROFILING flag forces it, like
-LOGGING); `beginInstr` snapshots pre-execution PC/A5/A7+clock, `endInstr` computes
-the cycle delta and unwinds. Interrupt/exception paths that `goto done` skip
-`beginInstr`, so `endInstr` no-ops (its pending flag is clear). All real logic is in
-`Core/Profiler/`.
+LOGGING); `beginInstr` snapshots pre-execution PC/A5/A7 + S-bit + clock, `endInstr`
+computes the cycle delta and reconstructs the stack. Interrupt/exception paths that
+`goto done` skip `beginInstr`, so `endInstr` no-ops (its pending flag is clear). All
+real logic is in `Core/Profiler/`.
+
+**Branch-stack fallback (no-DWARF / assembly).** When the host uploads an *empty*
+unwind table (a hunk program with no `.debug_frame`), `CpuProfiler::start()` selects
+runtime branch-stack reconstruction instead of DWARF: the `BranchStack::push/popRts/
+popRte/enterException` hooks above maintain a shadow call stack, ported 1:1 from
+WinUAE's `debugmem.cpp` (`branch_stack_push` / `_pop_rts` / `_pop_rte`). Two stacks
+keyed on the S-bit (USP vs SSP), pop matched by return PC; `popRte` always unwinds the
+supervisor stack; a user push/pop resets the supervisor count (WinUAE cleanup); the
+exception/interrupt entry hooks bridge the handler to the interrupted code (so IRQ
+frames appear). Deviations from WinUAE: no per-frame `regs[16]` snapshot (we only emit
+PCs), and overflow drops the oldest frame rather than resetting the whole stack.
+`CpuProfiler::seedFromStack` seeds the stack at capture start by scanning for return
+addresses — **this heuristic mirrors `src/stackManager.ts` `guessStack`; keep the two in
+sync.** The emitted stream format is identical to the DWARF path, so the host/webview is
+unaware which method ran. No new exports or hooks beyond the rows above.
 
 ## DMA profiler
 
