@@ -61,7 +61,7 @@ gated by a new Moira state flag and bracketed at frame boundaries.
 | `Core/Components/CPU/Moira/MoiraTypes.h` | `namespace State` | `PROFILING = (1 << 10)` — first free flag bit (8/9 are CHECK_WP/CHECK_CP) |
 | `Core/Components/CPU/Moira/Moira.h` | clock accessors | `enableProfiling()/disableProfiling()` — set/clear the flag (forces the execute() slow path) |
 | `Core/Components/CPU/Moira/Moira.cpp` | include block | `#include "CpuProfiler.h"` |
-| `Core/Components/CPU/Moira/Moira.cpp` | `execute()` after the `LOGGING` block | `if (flags & PROFILING) CpuProfiler::beginInstr(reg.pc0, reg.a[5], reg.sp, reg.sr.s, clock);` |
+| `Core/Components/CPU/Moira/Moira.cpp` | `execute()` after the `LOGGING` block | `if (flags & PROFILING) CpuProfiler::beginInstr(reg.pc0, reg.a[5], reg.sp, reg.usp, reg.sr.s, clock);` |
 | `Core/Components/CPU/Moira/Moira.cpp` | `execute()` at the `done:` label | `if (flags & PROFILING) CpuProfiler::endInstr(clock);` |
 | `Core/Components/CPU/Moira/MoiraExec_cpp.h` | `execJsr` (both branches), after `push(reg.pc)` | `if (flags & State::PROFILING) CpuProfiler::BranchStack::push(reg.sr.s, reg.pc, reg.sp);` |
 | `Core/Components/CPU/Moira/MoiraExec_cpp.h` | `execBsr` (both branches), after `push(retpc)` | `if (flags & State::PROFILING) CpuProfiler::BranchStack::push(reg.sr.s, retpc, reg.sp);` |
