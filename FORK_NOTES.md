@@ -79,6 +79,16 @@ computes the cycle delta and reconstructs the stack. Interrupt/exception paths t
 `goto done` skip `beginInstr`, so `endInstr` no-ops (its pending flag is clear). All
 real logic is in `Core/Profiler/`.
 
+**Out-of-program time + synthetic buckets.** `endInstr` no longer drops samples outside
+`[start,end)` — their cycles are emitted (leaf PC kept; DWARF can't unwind from there so
+the raw leaf is forced) so the host's totals reach ~100%. The host classifies an
+out-of-program leaf as `[Kickstart]` (ROM range) or `[External]`. For `[IRQ]`, `beginInstr`
+measures the cycle *gap* since the previous `endInstr` (the interrupt/exception dispatch
+overhead — that dispatch `goto done`s past `beginInstr`, so the gap is unaccounted) and
+emits a standalone marker record `[1, IRQ_MARKER, gap]` (`IRQ_MARKER = 0xFFFFFFFE`). This
+mirrors WinUAE's `cpu_profiler` cycle-gap `0x7fff'ffff` marker. See the host classifier in
+`src/profilerManager.ts` (`syntheticLabel`).
+
 **Branch-stack fallback (no-DWARF / assembly).** When the host uploads an *empty*
 unwind table (a hunk program with no `.debug_frame`), `CpuProfiler::start()` selects
 runtime branch-stack reconstruction instead of DWARF: the `BranchStack::push/popRts/
