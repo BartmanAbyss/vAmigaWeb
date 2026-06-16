@@ -109,9 +109,10 @@ unaware which method ran. No new exports or hooks beyond the rows above.
 A per-DMA-cycle bus profiler, sibling of the CPU profiler, captured in the **same
 frame** (it rides `wasm_profile_start`). It records one 8-byte cell per dma-cycle —
 `{ owner, flags, data, addr }` — into a frame-wide "enriched grid", plus a chip/slow-RAM
-snapshot at capture start. The host uses the grid to draw a DMA channel line + per-channel
-totals, and (future) to reconstruct memory by replaying the grid's WRITE cells over the
-snapshot. The grid is built by mirroring Agnus's per-line `busOwner/busAddr/busData` at
+**and custom-register** snapshot at capture start. The host uses the grid to draw a DMA
+channel line + per-channel totals, the DMA tooltip's "DMA Control" view (DMACON reconstructed
+per slot from the baseline + the frame's writes), and (future) to reconstruct memory by
+replaying the grid's WRITE cells over the snapshot. The grid is built by mirroring Agnus's per-line `busOwner/busAddr/busData` at
 EOL; the two things those arrays lack — read-vs-write and byte-vs-word — are added as a
 `flags` byte (`WRITE|BYTE|CODE` + 2-bit Copper sub-state) stamped at the write sites.
 
@@ -143,12 +144,22 @@ only a branch:
 | `main.cpp` | after `wasm_profile_get_data` | `wasm_dma_get_data` / `wasm_dma_get_snapshot` exports |
 | `CMakeLists.txt` (top level) | `EXPORTED_FUNCTIONS` | `_wasm_dma_get_data`, `_wasm_dma_get_snapshot` |
 
+**Custom-register baseline:** `DmaProfiler::start()` spypeeks the whole `0xDFF000..0x1FE`
+range (256 little-endian u16) into `gCustom` — side-effect-free, "we get what we can" (the old
+vscode-amiga-debug shipped a full register file from WinUAE's `save_custom`; vAmiga has no flat
+dump). `spypeekCustom16` returns the readable registers accurately and **0 for write-only ones**,
+so as a final step we backfill the write-only DMACON (`0x096`) from its readable mirror DMACONR
+(`0x002`) — that carries the channel-enable + BLTPRI bits, all the DMA-Control view needs. Other
+write-only regs (BLTCONx, color, pointers) start at 0 at the baseline and are recovered per-slot
+by replaying the frame's WRITE cells over it (`reconstructCustomRegs`, host-side). Exported via
+`wasm_dma_get_snapshot` (`customAddr/customLen`).
+
 **Scope / known gaps (this phase):** Blitter is a single color (no per-channel/Fill/Line —
 that needs `SlowBlitter` state, deferred to the blitter-visualizer phase). PAL only. The
-custom-register baseline snapshot is deferred (write-only regs aren't exposed via spypeek);
-copper color-register writes (`0x180..0x1BE`) bypass `doCopperDmaWrite` in vAmiga so they
-aren't in the grid; FAST-RAM writes bypass the chip bus. Reconstruction (chip+slow RAM +
-custom registers) is data-only/unwired this phase.
+custom-register baseline covers readable regs + DMACON exactly; other write-only regs are 0 until
+the frame's first write to them. Copper color-register writes (`0x180..0x1BE`) bypass
+`doCopperDmaWrite` in vAmiga so they aren't in the grid; FAST-RAM writes bypass the chip bus.
+Reconstruction (chip+slow RAM + custom registers) is data-only/unwired this phase.
 
 ## Other fork infrastructure
 - Build fix for recent emsdk: `'HEAPU8','HEAPF32'` added to `EXPORTED_RUNTIME_METHODS`
